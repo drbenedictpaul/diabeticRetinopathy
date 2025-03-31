@@ -3,25 +3,57 @@ package main
 import (
 	"encoding/csv"
 	"fmt"
+	"image/color"
 	"math"
 	"math/rand"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+
+	"gonum.org/v1/plot"
+	"gonum.org/v1/plot/palette" // Added this
+	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/vg"
 )
+
+type matrixData struct {
+	matrix [][]float64
+}
+
+func (m *matrixData) Dims() (c, r int) {
+	if len(m.matrix) == 0 {
+		return 0, 0
+	}
+	return len(m.matrix[0]), len(m.matrix)
+}
+
+func (m *matrixData) X(c int) float64 {
+	return float64(c)
+}
+
+func (m *matrixData) Y(r int) float64 {
+	return float64(r)
+}
+
+func (m *matrixData) Z(c, r int) float64 {
+	return m.matrix[r][c]
+}
 
 type Patient struct {
 	Features []float64
 	Label    int
 }
 
+type xy struct {
+	x, y float64
+}
+
 type Tree struct {
-	Feature    int
-	Threshold  float64
-	Left       *Tree
-	Right      *Tree
-	Prediction int
+	Feature     int
+	Threshold   float64
+	Left, Right *Tree
+	Prediction  int
 }
 
 type RandomForest struct {
@@ -74,6 +106,41 @@ func main() {
 	scaleFeatures(patients)
 	fmt.Println("Scaled features")
 
+	// Extract features for correlation
+	hornerin := make([]float64, len(patients))
+	sfn := make([]float64, len(patients))
+	age := make([]float64, len(patients))
+	egfr := make([]float64, len(patients))
+	rbs := make([]float64, len(patients))
+	hba1c := make([]float64, len(patients))
+	for i, p := range patients {
+		hornerin[i] = p.Features[0] // Hornerin
+		sfn[i] = p.Features[1]      // SFN
+		age[i] = p.Features[2]      // Age
+		egfr[i] = p.Features[6]     // eGFR
+		rbs[i] = p.Features[9]      // RBS
+		hba1c[i] = p.Features[10]   // HbA1C
+	}
+
+	// Calculate correlations
+	fmt.Println("Correlations with Hornerin:")
+	fmt.Printf("SFN: %.3f\n", pearsonCorrelation(hornerin, sfn))
+	fmt.Printf("Age: %.3f\n", pearsonCorrelation(hornerin, age))
+	fmt.Printf("eGFR: %.3f\n", pearsonCorrelation(hornerin, egfr))
+	fmt.Printf("RBS: %.3f\n", pearsonCorrelation(hornerin, rbs))
+	fmt.Printf("HbA1C: %.3f\n", pearsonCorrelation(hornerin, hba1c))
+
+	fmt.Println("Correlations with SFN:")
+	fmt.Printf("Hornerin: %.3f\n", pearsonCorrelation(sfn, hornerin))
+	fmt.Printf("Age: %.3f\n", pearsonCorrelation(sfn, age))
+	fmt.Printf("eGFR: %.3f\n", pearsonCorrelation(sfn, egfr))
+	fmt.Printf("RBS: %.3f\n", pearsonCorrelation(sfn, rbs))
+	fmt.Printf("HbA1C: %.3f\n", pearsonCorrelation(sfn, hba1c))
+
+	plotCorrelationHeatmap(patients)
+
+	plotCorrelationBars(patients)
+
 	folds := kFoldSplit(patients, 5)
 	avgAccuracy := 0.0
 	for i := 0; i < 5; i++ {
@@ -99,6 +166,30 @@ func main() {
 	}
 	avgAccuracy /= 5
 	fmt.Printf("Average Cross-Validation Accuracy: %.2f%%\n", avgAccuracy)
+
+	// Sample data for plotting
+	confusionMatrix := [][]float64{
+		{5, 2, 1},
+		{1, 4, 2},
+		{0, 1, 6},
+	}
+	categories := []string{"DM", "DR", "DN"}
+	scatterData := []xy{
+		{0, 0.1}, {0, 0.2}, {0, 0},
+		{1, 1.1}, {1, 0.9}, {1, 1},
+		{2, 2.0}, {2, 1.9}, {2, 2.1},
+	}
+
+	// Generate plots
+	plotConfusionMatrix(confusionMatrix, categories)
+	plotBarChart(confusionMatrix, categories)
+	plotScatter(scatterData, categories)
+
+	fmt.Println("All plots generated successfully!")
+
+	featureIndices := []int{9, 5, 8} // HbA1C, eGFR, RBS
+	featureNames := []string{"HbA1C", "eGFR", "RBS"}
+	plotMultiFeatureBox(patients, featureIndices, featureNames, categories)
 }
 
 func mapLabel(category string) int {
@@ -211,7 +302,7 @@ func scaleFeatures(patients []Patient) {
 }
 
 func kFoldSplit(patients []Patient, k int) [][]Patient {
-	rand.Seed(42) // Fixed seed for reproducibility
+	rand.Seed(42)
 	byClass := [3][]Patient{{}, {}, {}}
 	for _, p := range patients {
 		byClass[p.Label] = append(byClass[p.Label], p)
@@ -446,4 +537,278 @@ func evaluateModel(forest RandomForest, test []Patient) {
 	}
 	overallAccuracy := float64(correct) / float64(total) * 100
 	fmt.Printf("Overall Accuracy: %.2f%%\n", overallAccuracy)
+}
+
+func plotConfusionMatrix(matrix [][]float64, categories []string) {
+	p := plot.New()
+	p.Title.Text = "Confusion Matrix Heatmap"
+	p.X.Label.Text = "Predicted"
+	p.Y.Label.Text = "True"
+
+	// Corrected line 509
+	palette := palette.Heat(256, 1)
+
+	// Create the heatmap
+	grid := &matrixData{matrix: matrix}
+	h := plotter.NewHeatMap(grid, palette)
+	p.Add(h)
+
+	// Set axis ticks using categories
+	p.X.Tick.Marker = plot.ConstantTicks([]plot.Tick{
+		{Value: 0, Label: categories[0]},
+		{Value: 1, Label: categories[1]},
+		{Value: 2, Label: categories[2]},
+	})
+	p.Y.Tick.Marker = plot.ConstantTicks([]plot.Tick{
+		{Value: 0, Label: categories[0]},
+		{Value: 1, Label: categories[1]},
+		{Value: 2, Label: categories[2]},
+	})
+
+	if err := p.Save(5*vg.Inch, 5*vg.Inch, "confusion_matrix.png"); err != nil {
+		panic(err)
+	}
+	fmt.Println("Confusion matrix saved as confusion_matrix.png")
+}
+
+func plotBarChart(matrix [][]float64, categories []string) {
+	p := plot.New()
+	p.Title.Text = "Accuracy per Category"
+	p.Y.Label.Text = "Accuracy (%)"
+
+	// Calculate accuracy from the matrix
+	accuracies := make([]float64, len(matrix))
+	for i := range matrix {
+		total := 0.0
+		for j := range matrix[i] {
+			total += matrix[i][j]
+		}
+		if total > 0 {
+			accuracies[i] = (matrix[i][i] / total) * 100
+		}
+	}
+
+	bars, err := plotter.NewBarChart(plotter.Values(accuracies), vg.Points(20))
+	if err != nil {
+		panic(err)
+	}
+	bars.LineStyle.Width = vg.Length(0)
+	bars.Color = color.RGBA{R: 100, G: 150, B: 200, A: 255} // Light blue
+	p.Add(bars)
+
+	p.NominalX(categories...)
+
+	if err := p.Save(5*vg.Inch, 4*vg.Inch, "accuracy_bars.png"); err != nil {
+		panic(err)
+	}
+	fmt.Println("Bar chart saved as accuracy_bars.png")
+}
+
+func plotScatter(data []xy, categories []string) {
+	p := plot.New()
+	p.Title.Text = "True vs Predicted Values"
+	p.X.Label.Text = "True Category"
+	p.Y.Label.Text = "Predicted Value"
+
+	points := make(plotter.XYs, len(data))
+	for i, d := range data {
+		points[i].X = d.x
+		points[i].Y = d.y
+	}
+	s, err := plotter.NewScatter(points)
+	if err != nil {
+		panic(err)
+	}
+	s.GlyphStyle.Color = color.RGBA{R: 0, G: 255, B: 0, A: 255} // Green
+	s.GlyphStyle.Radius = vg.Points(5)
+	p.Add(s)
+
+	p.X.Tick.Marker = plot.ConstantTicks([]plot.Tick{
+		{Value: 0, Label: categories[0]},
+		{Value: 1, Label: categories[1]},
+		{Value: 2, Label: categories[2]},
+	})
+
+	if err := p.Save(5*vg.Inch, 4*vg.Inch, "scatter_plot.png"); err != nil {
+		panic(err)
+	}
+	fmt.Println("Scatter plot saved as scatter_plot.png")
+}
+
+func plotMultiFeatureBox(patients []Patient, featureIndices []int, featureNames, categories []string) {
+	p := plot.New()
+	p.Title.Text = "Feature Distributions by Category"
+	p.X.Label.Text = "Category and Feature"
+	p.Y.Label.Text = "Value"
+
+	// Generate box plots for each feature and category
+	for fIdx, f := range featureIndices {
+		for class := 0; class < 3; class++ {
+			values := plotter.Values{}
+			for _, patient := range patients {
+				if patient.Label == class && len(patient.Features) > f && patient.Features[f] != 0.0 {
+					values = append(values, patient.Features[f])
+				}
+			}
+			if len(values) == 0 {
+				fmt.Printf("No data for %s in category %d\n", featureNames[fIdx], class)
+				continue
+			}
+			box, err := plotter.NewBoxPlot(vg.Points(20), float64(fIdx*3+class), values)
+			if err != nil {
+				panic(err)
+			}
+			p.Add(box)
+		}
+	}
+
+	// Set X-axis ticks
+	ticks := []plot.Tick{
+		{Value: 0, Label: "HbA1C DM"},
+		{Value: 1, Label: "DR"},
+		{Value: 2, Label: "DN"},
+		{Value: 3, Label: "eGFR DM"},
+		{Value: 4, Label: "DR"},
+		{Value: 5, Label: "DN"},
+		{Value: 6, Label: "RBS DM"},
+		{Value: 7, Label: "DR"},
+		{Value: 8, Label: "DN"},
+	}
+	p.X.Tick.Marker = plot.ConstantTicks(ticks)
+	p.X.Tick.Label.Rotation = math.Pi / 4 // Rotate labels for readability
+
+	// Save the plot
+	if err := p.Save(8*vg.Inch, 4*vg.Inch, "multi_feature_boxplot.png"); err != nil {
+		panic(err)
+	}
+	fmt.Println("Multi-feature boxplot saved as multi_feature_boxplot.png")
+}
+
+func pearsonCorrelation(x, y []float64) float64 {
+	n := float64(len(x))
+	if n != float64(len(y)) || n == 0 {
+		return 0
+	}
+	sumX, sumY, sumXY, sumX2, sumY2 := 0.0, 0.0, 0.0, 0.0, 0.0
+	for i := 0; i < len(x); i++ {
+		sumX += x[i]
+		sumY += y[i]
+		sumXY += x[i] * y[i]
+		sumX2 += x[i] * x[i]
+		sumY2 += y[i] * y[i]
+	}
+	num := sumXY - (sumX * sumY / n)
+	denom := math.Sqrt((sumX2 - (sumX * sumX / n)) * (sumY2 - (sumY * sumY / n)))
+	if denom == 0 {
+		return 0
+	}
+	return num / denom
+}
+
+func plotCorrelationHeatmap(patients []Patient) {
+	n := len(patients)
+	features := make([][]float64, 6)
+	labels := []string{"Hornerin", "SFN", "Age", "eGFR", "RBS", "HbA1C"}
+	for i := range features {
+		features[i] = make([]float64, n)
+	}
+	for i, p := range patients {
+		features[0][i] = p.Features[0]
+		features[1][i] = p.Features[1]
+		features[2][i] = p.Features[2]
+		features[3][i] = p.Features[6]
+		features[4][i] = p.Features[9]
+		features[5][i] = p.Features[10]
+	}
+
+	corrMatrix := make([][]float64, 6)
+	for i := range corrMatrix {
+		corrMatrix[i] = make([]float64, 6)
+		for j := range corrMatrix[i] {
+			corrMatrix[i][j] = pearsonCorrelation(features[i], features[j])
+		}
+	}
+
+	p := plot.New()
+	p.Title.Text = "Feature Correlation Heatmap"
+	p.X.Label.Text = "Features"
+	p.Y.Label.Text = "Features"
+
+	grid := &matrixData{matrix: corrMatrix}
+	h := plotter.NewHeatMap(grid, palette.Heat(256, 1))
+	p.Add(h)
+
+	ticks := make([]plot.Tick, 6)
+	for i := 0; i < 6; i++ {
+		ticks[i] = plot.Tick{Value: float64(i), Label: labels[i]}
+	}
+	p.X.Tick.Marker = plot.ConstantTicks(ticks)
+	p.Y.Tick.Marker = plot.ConstantTicks(ticks)
+	p.X.Tick.Label.Rotation = math.Pi / 4
+
+	if err := p.Save(6*vg.Inch, 6*vg.Inch, "correlation_heatmap.png"); err != nil {
+		panic(err)
+	}
+	fmt.Println("Saved correlation_heatmap.png")
+}
+
+func plotCorrelationBars(patients []Patient) {
+	n := len(patients)
+	features := make([][]float64, 6)
+
+	for i := range features {
+		features[i] = make([]float64, n)
+	}
+	for i, p := range patients {
+		features[0][i] = p.Features[0]
+		features[1][i] = p.Features[1]
+		features[2][i] = p.Features[2]
+		features[3][i] = p.Features[6]
+		features[4][i] = p.Features[9]
+		features[5][i] = p.Features[10]
+	}
+
+	// Correlations for Hornerin and SFN
+	hornerinCorrs := []float64{
+		pearsonCorrelation(features[0], features[2]), // Age
+		pearsonCorrelation(features[0], features[3]), // eGFR
+		pearsonCorrelation(features[0], features[4]), // RBS
+		pearsonCorrelation(features[0], features[5]), // HbA1C
+	}
+	sfnCorrs := []float64{
+		pearsonCorrelation(features[1], features[2]), // Age
+		pearsonCorrelation(features[1], features[3]), // eGFR
+		pearsonCorrelation(features[1], features[4]), // RBS
+		pearsonCorrelation(features[1], features[5]), // HbA1C
+	}
+
+	p := plot.New()
+	p.Title.Text = "Hornerin and SFN Correlations"
+	p.Y.Label.Text = "Correlation Coefficient"
+	p.X.Label.Text = "Features"
+
+	barWidth := vg.Points(20)
+	hornerinBars, err := plotter.NewBarChart(plotter.Values(hornerinCorrs), barWidth)
+	if err != nil {
+		panic(err)
+	}
+	hornerinBars.Color = color.RGBA{R: 255, G: 0, B: 0, A: 255} // Red
+	p.Add(hornerinBars)
+	p.Legend.Add("Hornerin", hornerinBars)
+
+	sfnBars, err := plotter.NewBarChart(plotter.Values(sfnCorrs), barWidth)
+	if err != nil {
+		panic(err)
+	}
+	sfnBars.Color = color.RGBA{R: 0, G: 0, B: 255, A: 255} // Blue
+	sfnBars.Offset = barWidth
+	p.Add(sfnBars)
+	p.Legend.Add("SFN", sfnBars)
+
+	p.NominalX("Age", "eGFR", "RBS", "HbA1C")
+
+	if err := p.Save(6*vg.Inch, 4*vg.Inch, "correlation_bars.png"); err != nil {
+		panic(err)
+	}
+	fmt.Println("Saved correlation_bars.png")
 }
